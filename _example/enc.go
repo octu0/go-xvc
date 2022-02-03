@@ -48,6 +48,7 @@ func main() {
 	}
 	defer xvc.DestroyEncoder(encoder)
 
+	userData := time.Now().UnixNano()
 	nals, err := encoder.Encode(
 		img.Y,       // y plane
 		img.Cb,      // u plane
@@ -55,7 +56,7 @@ func main() {
 		img.YStride, // y stride
 		img.CStride, // u stride
 		img.CStride, // v stride
-		time.Now(),  // user_data
+		userData,    // int64 user_data
 	)
 	if err != nil {
 		panic(err)
