@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
-	"time"
 	"unsafe"
 )
 
@@ -48,23 +47,33 @@ func (n *NALUnit) CUserData() C.int64_t {
 
 type encoderParameterFunc func(*encoderParameter)
 type encoderParameter struct {
-	width        int
-	height       int
-	framerate    float32
-	chromaFormat ChromaFormat
-	colorMatrix  ColorMatrix
-	qp           int
-	lowDelay     int // 0: off, 1: on
-	speedMode    int // 0: Placebo, 1: Slow, 2: Fast
-	tuneMode     int // 0: Visual quality, 1: PSNR
-	threads      int // -1: auto-detect,  0: disabled, 1+: number of threads
-	restrictMode int
+	width             int
+	height            int
+	framerate         float32
+	chromaFormat      ChromaFormat
+	colorMatrix       ColorMatrix
+	qp                int
+	lowDelay          int // 0: off, 1: on
+	speedMode         int // 0: Placebo, 1: Slow, 2: Fast
+	tuneMode          int // 0: Visual quality, 1: PSNR
+	threads           int // -1: auto-detect,  0: disabled, 1+: number of threads
+	bitDepth          uint32
+	internalBitDepath uint32
+	restrictMode      int
 }
 
 func (e *encoderParameter) setCParam(param *C.xvc_encoder_parameters) {
 	param.width = C.int(e.width)
 	param.height = C.int(e.height)
 	param.framerate = C.double(e.framerate)
+	param.qp = C.int(e.qp)
+	param.low_delay = C.int(e.lowDelay)
+	param.speed_mode = C.int(e.speedMode)
+	param.tune_mode = C.int(e.tuneMode)
+	param.threads = C.int(e.threads)
+	param.input_bitdepth = C.uint32_t(e.bitDepth)
+	param.internal_bitdepth = C.uint32_t(e.internalBitDepath)
+	param.restricted_mode = C.int(e.restrictMode)
 
 	switch e.chromaFormat {
 	case ChromaFormatMonochrome:
@@ -89,24 +98,19 @@ func (e *encoderParameter) setCParam(param *C.xvc_encoder_parameters) {
 	case ColorMatrixUnified:
 		param.color_matrix = C.XVC_ENC_COLOR_MATRIX_UNDEFINED
 	}
-
-	param.qp = C.int(e.qp)
-	param.low_delay = C.int(e.lowDelay)
-	param.speed_mode = C.int(e.speedMode)
-	param.tune_mode = C.int(e.tuneMode)
-	param.threads = C.int(e.threads)
-	param.restricted_mode = C.int(e.restrictMode)
 }
 
 func defaultEncoderParameter() *encoderParameter {
 	return &encoderParameter{
-		chromaFormat: ChromaFormat420,
-		colorMatrix:  ColorMatrix2020,
-		qp:           32, // default
-		lowDelay:     1,  // on
-		speedMode:    2,  // fast
-		threads:      -1, // auto
-		restrictMode: 3,  // baseline
+		chromaFormat:      ChromaFormat420,
+		colorMatrix:       ColorMatrix709,
+		qp:                32,
+		lowDelay:          0,  // on
+		speedMode:         2,  // fast
+		threads:           -1, // auto
+		bitDepth:          8,
+		internalBitDepath: 8,
+		restrictMode:      3, // baseline
 	}
 }
 
@@ -133,7 +137,7 @@ type Encoder struct {
 	encoder unsafe.Pointer // xvc_encoder*
 }
 
-func (e *Encoder) Encode(y, u, v []byte, strideY, strideU, strideV int, t time.Time) ([]*NALUnit, error) {
+func (e *Encoder) Encode(y, u, v []byte, strideY, strideU, strideV int, userData int64) ([]*NALUnit, error) {
 	ret := unsafe.Pointer(C.encoder_encode2(
 		(*C.xvc_encoder_api)(e.api),
 		(*C.xvc_encoder)(e.encoder),
@@ -143,7 +147,7 @@ func (e *Encoder) Encode(y, u, v []byte, strideY, strideU, strideV int, t time.T
 		C.int(strideY),
 		C.int(strideU),
 		C.int(strideV),
-		C.int64_t(t.UnixNano()),
+		C.int64_t(userData),
 	))
 	if ret == nil {
 		return nil, fmt.Errorf("encode2 not succeed")

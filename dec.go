@@ -34,8 +34,6 @@ func (n *DecodedPicture) Image() (NALUnitType, ColorMatrix, image.Image) {
 	switch chromaFormat {
 	case ChromaFormat420:
 		return nalType, colorMatrix, n.yuvImage(width, height, image.YCbCrSubsampleRatio420)
-	case ChromaFormat422:
-		return nalType, colorMatrix, n.yuvImage(width, height, image.YCbCrSubsampleRatio422)
 	case ChromaFormat444:
 		return nalType, colorMatrix, n.yuvImage(width, height, image.YCbCrSubsampleRatio444)
 	default:
@@ -72,26 +70,14 @@ func (n *DecodedPicture) yuvImage(width, height int, subsample image.YCbCrSubsam
 			SubsampleRatio: subsample,
 		}
 	case image.YCbCrSubsampleRatio444:
-		ySize := width * height
-		uvSize := width * height
+		ySize := height * yStride
+		uvSize := height * uvStride
 		return &image.YCbCr{
 			Y:              C.GoBytes(unsafe.Pointer(&planes[0]), C.int(ySize)),
 			Cb:             C.GoBytes(unsafe.Pointer(&planes[1]), C.int(uvSize)),
 			Cr:             C.GoBytes(unsafe.Pointer(&planes[2]), C.int(uvSize)),
 			YStride:        int(strides[0]) - width,
 			CStride:        int(strides[1]) - width,
-			Rect:           rect,
-			SubsampleRatio: subsample,
-		}
-	case image.YCbCrSubsampleRatio422:
-		ySize := width * height
-		uvSize := ySize / 2
-		return &image.YCbCr{
-			Y:              C.GoBytes(unsafe.Pointer(&planes[0]), C.int(ySize)),
-			Cb:             C.GoBytes(unsafe.Pointer(&planes[1]), C.int(uvSize)),
-			Cr:             C.GoBytes(unsafe.Pointer(&planes[2]), C.int(uvSize)),
-			YStride:        int(strides[0]),
-			CStride:        int(strides[1]),
 			Rect:           rect,
 			SubsampleRatio: subsample,
 		}
@@ -108,6 +94,7 @@ type decoderParameter struct {
 	colorMatrix  ColorMatrix
 	maxFramerate float32
 	threads      int // -1: auto-detect
+	bitDepth     int
 }
 
 func (d *decoderParameter) setCParam(param *C.xvc_decoder_parameters) {
@@ -115,6 +102,7 @@ func (d *decoderParameter) setCParam(param *C.xvc_decoder_parameters) {
 	param.output_height = C.int(d.height)
 	param.max_framerate = C.double(d.maxFramerate)
 	param.threads = C.int(d.threads)
+	param.output_bitdepth = C.int(d.bitDepth)
 
 	switch d.chromaFormat {
 	case ChromaFormatMonochrome:
@@ -144,8 +132,9 @@ func (d *decoderParameter) setCParam(param *C.xvc_decoder_parameters) {
 func defaultDecoderParameter() *decoderParameter {
 	return &decoderParameter{
 		chromaFormat: ChromaFormat420,
-		colorMatrix:  ColorMatrix2020,
+		colorMatrix:  ColorMatrix709,
 		threads:      -1, // auto
+		bitDepth:     8,  // 8bit
 	}
 }
 
