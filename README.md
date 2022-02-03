@@ -34,6 +34,7 @@ func encode(out io.Writer) {
 	}
 	defer xvc.DestroyEncoder(encoder)
 
+	var userData int64
 	nals, err := encoder.Encode(
 		img.Y,       // y plane
 		img.Cb,      // u plane
@@ -41,7 +42,7 @@ func encode(out io.Writer) {
 		img.YStride, // y stride
 		img.CStride, // u stride
 		img.CStride, // v stride
-		time.Now(),  // user_data
+		userData,    // int64 user_data
 	)
 	if err != nil {
 		panic(err)
@@ -71,6 +72,7 @@ func decode(in io.Reader) {
 	if err != nil {
 		panic(err)
 	}
+	defer xvc.DestroyEncoder(decoder)
 
 	data, err := io.ReadAll(in)
 	if err != nil {
@@ -87,8 +89,10 @@ func decode(in io.Reader) {
 		if err != nil {
 			break
 		}
+		defer xvc.DestroyDecodedPicture(pic)
+
 		nalType, colorMatrix, img := pic.Image()
-		fmt.Printf("type=%s color_matrix=%d img=%T\n", i, nalType, colorMatrix, img) // type=intra_access_picture color_matrix=3 img=*image.YCbCr
+		fmt.Printf("type=%s color_matrix=%d img=%T\n", nalType, colorMatrix, img) // type=intra_access_picture color_matrix=3 img=*image.YCbCr
 	}
 }
 ```
