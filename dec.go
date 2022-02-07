@@ -12,89 +12,65 @@ package xvc
 import "C"
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"runtime"
+	"sync/atomic"
 	"unsafe"
 )
 
 type DecodedPicture struct {
-	api unsafe.Pointer // xvc_decoder_api*
-	pic unsafe.Pointer // xvc_decoded_picture*
+	width, height int
+	nalType       NALUnitType
+	colorMatrix   ColorMatrix
+	img           image.Image
+	userData      int64
+	closed        int32
+	closeFunc     func()
 }
 
-func (n *DecodedPicture) Image() (NALUnitType, ColorMatrix, image.Image) {
-	p := (*C.xvc_decoded_picture)(n.pic)
-	nalType := NALUnitType(p.stats.nal_unit_type)
-	colorMatrix := ColorMatrix(p.stats.color_matrix)
-
-	width, height := int(p.stats.width), int(p.stats.height)
-
-	chromaFormat := ChromaFormat(p.stats.chroma_format)
-	switch chromaFormat {
-	case ChromaFormat420:
-		return nalType, colorMatrix, n.yuvImage(width, height, image.YCbCrSubsampleRatio420)
-	case ChromaFormat444:
-		return nalType, colorMatrix, n.yuvImage(width, height, image.YCbCrSubsampleRatio444)
-	default:
-		panic(fmt.Sprintf("unsupport format: %d", chromaFormat))
+func (n *DecodedPicture) Close() {
+	if atomic.CompareAndSwapInt32(&n.closed, 0, 1) {
+		n.closeFunc()
 	}
+}
+
+func (n *DecodedPicture) Width() int {
+	return n.width
+}
+
+func (n *DecodedPicture) Height() int {
+	return n.height
+}
+
+func (n *DecodedPicture) Type() NALUnitType {
+	return n.nalType
+}
+
+func (n *DecodedPicture) ColorMatrix() ColorMatrix {
+	return n.colorMatrix
+}
+
+func (n *DecodedPicture) Image() image.Image {
+	return n.img
 }
 
 func (n *DecodedPicture) UserData() int64 {
-	p := (*C.xvc_decoded_picture)(n.pic)
-	return int64(p.user_data)
-}
-
-func (n *DecodedPicture) yuvImage(width, height int, subsample image.YCbCrSubsampleRatio) *image.YCbCr {
-	rect := image.Rect(0, 0, width, height)
-
-	p := (*C.xvc_decoded_picture)(n.pic)
-	planes := ([3]*C.char)(p.planes)
-	strides := ([3]C.int)(p.stride)
-
-	yStride := int(strides[0])
-	uvStride := int(strides[1])
-
-	switch subsample {
-	case image.YCbCrSubsampleRatio420:
-		ySize := height * yStride
-		uvSize := (height / 2) * uvStride
-		return &image.YCbCr{
-			Y:              C.GoBytes(unsafe.Pointer(&planes[0]), C.int(ySize)),
-			Cb:             C.GoBytes(unsafe.Pointer(&planes[1]), C.int(uvSize)),
-			Cr:             C.GoBytes(unsafe.Pointer(&planes[2]), C.int(uvSize)),
-			YStride:        yStride - width,
-			CStride:        uvStride - (width / 2),
-			Rect:           rect,
-			SubsampleRatio: subsample,
-		}
-	case image.YCbCrSubsampleRatio444:
-		ySize := height * yStride
-		uvSize := height * uvStride
-		return &image.YCbCr{
-			Y:              C.GoBytes(unsafe.Pointer(&planes[0]), C.int(ySize)),
-			Cb:             C.GoBytes(unsafe.Pointer(&planes[1]), C.int(uvSize)),
-			Cr:             C.GoBytes(unsafe.Pointer(&planes[2]), C.int(uvSize)),
-			YStride:        int(strides[0]) - width,
-			CStride:        int(strides[1]) - width,
-			Rect:           rect,
-			SubsampleRatio: subsample,
-		}
-	default:
-		panic(fmt.Sprintf("unsupport yuv format: %d", subsample))
-	}
+	return n.userData
 }
 
 type decoderParameterFunc func(*decoderParameter)
 type decoderParameter struct {
-	width        int
-	height       int
-	chromaFormat ChromaFormat
-	colorMatrix  ColorMatrix
-	maxFramerate float32
-	threads      int // -1: auto-detect
-	bitDepth     int
+	width          int
+	height         int
+	chromaFormat   ChromaFormat
+	colorMatrix    ColorMatrix
+	maxFramerate   float32
+	threads        int // -1: auto-detect
+	bitDepth       int
+	bufferPoolFunc func() BufferPool
 }
 
 func (d *decoderParameter) setCParam(param *C.xvc_decoder_parameters) {
@@ -132,9 +108,12 @@ func (d *decoderParameter) setCParam(param *C.xvc_decoder_parameters) {
 func defaultDecoderParameter() *decoderParameter {
 	return &decoderParameter{
 		chromaFormat: ChromaFormat420,
-		colorMatrix:  ColorMatrix709,
+		colorMatrix:  ColorMatrix2020,
 		threads:      -1, // auto
 		bitDepth:     8,  // 8bit
+		bufferPoolFunc: func() BufferPool {
+			return newSimpleBufferPool(4 * 1024)
+		},
 	}
 }
 
@@ -156,37 +135,41 @@ func DecoderParameterMaxFramerate(rate float32) decoderParameterFunc {
 	}
 }
 
+func DecoderBufferPool(fn func() BufferPool) decoderParameterFunc {
+	return func(p *decoderParameter) {
+		p.bufferPoolFunc = fn
+	}
+}
+
 type Decoder struct {
 	api     unsafe.Pointer // xvc_decoder_api*
 	decoder unsafe.Pointer // xvc_decoder*
+	pool    BufferPool
 }
 
-func (d *Decoder) Decode(bytes []byte) error {
+func (d *Decoder) Decode(nalData []byte) error {
+	r := bytes.NewReader(nalData[0:4])
+
+	nalSize := [4]uint8{}
+	if err := binary.Read(r, binary.BigEndian, &nalSize); err != nil {
+		return err
+	}
+
+	length := uint32(nalSize[0]) | uint32(nalSize[1])<<8 | uint32(nalSize[2])<<16 | uint32(nalSize[3])<<24
+	data := nalData[4:length]
+
 	ret := C.decoder_decode_nal(
 		(*C.xvc_decoder_api)(d.api),
 		(*C.xvc_decoder)(d.decoder),
-		(*C.uchar)(unsafe.Pointer(&bytes[0])),
-		C.size_t(len(bytes)),
+		(*C.uchar)(unsafe.Pointer(&data[0])),
+		C.size_t(length),
 		C.int64_t(0),
 	)
-	if ret != C.XVC_DEC_OK {
-		return DecReturnCode(ret)
-	}
-	return nil
-}
 
-func (d *Decoder) DecodeNAL(nal *NALUnit) error {
-	bytes, size := nal.CNALBytes()
-	userData := nal.CUserData()
-
-	ret := C.decoder_decode_nal(
-		(*C.xvc_decoder_api)(d.api),
-		(*C.xvc_decoder)(d.decoder),
-		bytes,
-		size,
-		userData,
-	)
-	if ret != C.XVC_DEC_OK {
+	switch ret {
+	case C.XVC_DEC_BITSTREAM_VERSION_LOWER_THAN_SUPPORTED_BY_DECODER,
+		C.XVC_DEC_BITSTREAM_VERSION_HIGHER_THAN_DECODER,
+		C.XVC_DEC_BITSTREAM_BITDEPTH_TOO_HIGH:
 		return DecReturnCode(ret)
 	}
 	return nil
@@ -208,39 +191,92 @@ func (d *Decoder) DecodedPicture() (*DecodedPicture, error) {
 		(*C.xvc_decoder_api)(d.api),
 		(*C.xvc_decoder)(d.decoder),
 	)
+	defer C.decoder_picture_destroy(
+		(*C.xvc_decoder_api)(d.api),
+		pic,
+	)
+
 	ret := C.decoder_get_picture(
 		(*C.xvc_decoder_api)(d.api),
 		(*C.xvc_decoder)(d.decoder),
 		pic,
 	)
 	if ret != C.XVC_DEC_OK {
-		C.decoder_picture_destroy(
-			(*C.xvc_decoder_api)(d.api),
-			pic,
-		)
 		return nil, DecReturnCode(ret)
 	}
 
-	dpic := &DecodedPicture{d.api, unsafe.Pointer(pic)}
-	runtime.SetFinalizer(dpic, finalizeDecodedPicture)
+	buf := d.pool.Get()
+	buf.Grow(int(pic.size))
+	buf.Write(C.GoBytes(unsafe.Pointer(pic.bytes), C.int(pic.size)))
+
+	width, height := int(pic.stats.width), int(pic.stats.height)
+	img := d.createImage(buf, width, height, ChromaFormat(pic.stats.chroma_format))
+
+	dpic := &DecodedPicture{
+		width:       width,
+		height:      height,
+		nalType:     NALUnitType(pic.stats.nal_unit_type),
+		colorMatrix: ColorMatrix(pic.stats.color_matrix),
+		img:         img,
+		userData:    int64(pic.user_data),
+		closed:      int32(0),
+		closeFunc: func() {
+			buf.Reset()
+			d.pool.Put(buf)
+		},
+	}
 	return dpic, nil
 }
 
-func finalizeDecodedPicture(dpic *DecodedPicture) {
-	DestroyDecodedPicture(dpic)
+func (d *Decoder) createImage(buf *bytes.Buffer, width, height int, format ChromaFormat) image.Image {
+	switch format {
+	case ChromaFormat420:
+		return d.yuvImage(buf, width, height, image.YCbCrSubsampleRatio420)
+	case ChromaFormat444:
+		return d.yuvImage(buf, width, height, image.YCbCrSubsampleRatio444)
+	default:
+		panic(fmt.Sprintf("unsupport format: %d", format))
+	}
 }
 
-func DestroyDecodedPicture(dpic *DecodedPicture) error {
-	runtime.SetFinalizer(dpic, nil) // clear finalizer
+func (d *Decoder) yuvImage(buf *bytes.Buffer, width, height int, subsample image.YCbCrSubsampleRatio) *image.YCbCr {
+	rect := image.Rect(0, 0, width, height)
+	data := buf.Bytes()
 
-	if ret := C.decoder_picture_destroy(
-		(*C.xvc_decoder_api)(dpic.api),
-		(*C.xvc_decoded_picture)(dpic.pic),
-	); ret != C.XVC_DEC_OK {
-		return DecReturnCode(ret)
+	switch subsample {
+	case image.YCbCrSubsampleRatio420:
+		ySize := width * height
+		uvSize := (width / 2) * (height / 2)
+		y0, y1 := 0, ySize
+		u0, u1 := ySize, ySize+uvSize
+		v0, v1 := ySize+uvSize, ySize+uvSize+uvSize
+		return &image.YCbCr{
+			Y:              data[y0:y1],
+			Cb:             data[u0:u1],
+			Cr:             data[v0:v1],
+			YStride:        width,
+			CStride:        width / 2,
+			Rect:           rect,
+			SubsampleRatio: subsample,
+		}
+	case image.YCbCrSubsampleRatio444:
+		ySize := width * height
+		uvSize := width * height
+		y0, y1 := 0, ySize
+		u0, u1 := ySize, ySize+uvSize
+		v0, v1 := ySize+uvSize, ySize+uvSize+uvSize
+		return &image.YCbCr{
+			Y:              data[y0:y1],
+			Cb:             data[u0:u1],
+			Cr:             data[v0:v1],
+			YStride:        width,
+			CStride:        width,
+			Rect:           rect,
+			SubsampleRatio: subsample,
+		}
+	default:
+		panic(fmt.Sprintf("unsupport yuv format: %d", subsample))
 	}
-
-	return nil
 }
 
 func CreateDecoder(funcs ...decoderParameterFunc) (*Decoder, error) {
@@ -281,7 +317,7 @@ func CreateDecoder(funcs ...decoderParameterFunc) (*Decoder, error) {
 		(*C.xvc_decoder_api)(api),
 		(*C.xvc_decoder_parameters)(param),
 	))
-	decoder := &Decoder{api, dec}
+	decoder := &Decoder{api, dec, decParam.bufferPoolFunc()}
 	runtime.SetFinalizer(decoder, finalizeDecoder)
 	return decoder, nil
 }
