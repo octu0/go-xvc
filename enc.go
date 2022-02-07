@@ -12,21 +12,32 @@ package xvc
 import "C"
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"reflect"
 	"runtime"
+	"sync/atomic"
 	"unsafe"
 )
 
 type NALUnit struct {
-	bytes       []byte
+	buffer      *bytes.Buffer
 	size        uint32
 	nalUnitType uint32
 	userData    int64
+	closed      int32
+	closeFunc   func()
+}
+
+func (n *NALUnit) Close() {
+	if atomic.CompareAndSwapInt32(&n.closed, 0, 1) {
+		n.closeFunc()
+	}
 }
 
 func (n *NALUnit) Bytes() []byte {
-	return n.bytes
+	return n.buffer.Bytes()
 }
 
 func (n *NALUnit) UserData() int64 {
@@ -38,7 +49,8 @@ func (n *NALUnit) Type() NALUnitType {
 }
 
 func (n *NALUnit) CNALBytes() (*C.uchar, C.size_t) {
-	return (*C.uchar)(unsafe.Pointer(&n.bytes[0])), (C.size_t)(n.size)
+	b := n.Bytes()
+	return (*C.uchar)(unsafe.Pointer(&b[0])), (C.size_t)(n.size)
 }
 
 func (n *NALUnit) CUserData() C.int64_t {
@@ -53,6 +65,7 @@ type encoderParameter struct {
 	chromaFormat      ChromaFormat
 	colorMatrix       ColorMatrix
 	qp                int
+	deblock           int // 0: disabled, 1: enabled, 2:low complexity
 	lowDelay          int // 0: off, 1: on
 	speedMode         int // 0: Placebo, 1: Slow, 2: Fast
 	tuneMode          int // 0: Visual quality, 1: PSNR
@@ -60,6 +73,7 @@ type encoderParameter struct {
 	bitDepth          uint32
 	internalBitDepath uint32
 	restrictMode      int
+	bufferPoolFunc    func() BufferPool
 }
 
 func (e *encoderParameter) setCParam(param *C.xvc_encoder_parameters) {
@@ -67,6 +81,7 @@ func (e *encoderParameter) setCParam(param *C.xvc_encoder_parameters) {
 	param.height = C.int(e.height)
 	param.framerate = C.double(e.framerate)
 	param.qp = C.int(e.qp)
+	param.deblock = C.int(e.deblock)
 	param.low_delay = C.int(e.lowDelay)
 	param.speed_mode = C.int(e.speedMode)
 	param.tune_mode = C.int(e.tuneMode)
@@ -103,14 +118,18 @@ func (e *encoderParameter) setCParam(param *C.xvc_encoder_parameters) {
 func defaultEncoderParameter() *encoderParameter {
 	return &encoderParameter{
 		chromaFormat:      ChromaFormat420,
-		colorMatrix:       ColorMatrix709,
+		colorMatrix:       ColorMatrixUnified,
 		qp:                32,
-		lowDelay:          0,  // on
+		deblock:           1,  // enable
+		lowDelay:          1,  // on
 		speedMode:         2,  // fast
 		threads:           -1, // auto
 		bitDepth:          8,
 		internalBitDepath: 8,
 		restrictMode:      3, // baseline
+		bufferPoolFunc: func() BufferPool {
+			return newSimpleBufferPool(4 * 1024)
+		},
 	}
 }
 
@@ -132,9 +151,16 @@ func EncoderParameterFramerate(rate float32) encoderParameterFunc {
 	}
 }
 
+func EncoderBufferPool(fn func() BufferPool) encoderParameterFunc {
+	return func(p *encoderParameter) {
+		p.bufferPoolFunc = fn
+	}
+}
+
 type Encoder struct {
 	api     unsafe.Pointer // xvc_encoder_api*
 	encoder unsafe.Pointer // xvc_encoder*
+	pool    BufferPool
 }
 
 func (e *Encoder) Encode(y, u, v []byte, strideY, strideU, strideV int, userData int64) ([]*NALUnit, error) {
@@ -155,7 +181,7 @@ func (e *Encoder) Encode(y, u, v []byte, strideY, strideU, strideV int, userData
 	result := (*C.encode_result_t)(ret)
 	defer C.free_encode_result(result)
 
-	return e.copyNALUnits(result), nil
+	return e.copyNALUnits(result)
 }
 
 func (e *Encoder) Flush() ([]*NALUnit, bool) {
@@ -169,10 +195,14 @@ func (e *Encoder) Flush() ([]*NALUnit, bool) {
 	result := (*C.encode_result_t)(ret)
 	defer C.free_encode_result(result)
 
-	return e.copyNALUnits(result), true
+	nalUnits, err := e.copyNALUnits(result)
+	if err != nil {
+		return nil, false
+	}
+	return nalUnits, true
 }
 
-func (e *Encoder) copyNALUnits(result *C.encode_result_t) []*NALUnit {
+func (e *Encoder) copyNALUnits(result *C.encode_result_t) ([]*NALUnit, error) {
 	numNals := int(result.num_of_nals)
 	nals := []C.encode_nal_unit_buf_t{}
 	s := (*reflect.SliceHeader)(unsafe.Pointer(&nals))
@@ -183,17 +213,38 @@ func (e *Encoder) copyNALUnits(result *C.encode_result_t) []*NALUnit {
 	nalUnits := make([]*NALUnit, numNals)
 	for i := 0; i < numNals; i += 1 {
 		bufSize := uint32(nals[i].size) // size_t = unsigned long
-		buffer := make([]byte, bufSize) // todo pool
-		copy(buffer, C.GoBytes(unsafe.Pointer(nals[i].buf), C.int(bufSize)))
+
+		buf := e.pool.Get()
+		// [0:4] size header
+		// [4:]  nal data
+		buf.Grow(4 + int(bufSize))
+
+		nalSize := [4]int8{
+			int8(nals[i].nal_size[0]),
+			int8(nals[i].nal_size[1]),
+			int8(nals[i].nal_size[2]),
+			int8(nals[i].nal_size[3]),
+		}
+		for _, v := range nalSize {
+			if err := binary.Write(buf, binary.BigEndian, v); err != nil {
+				return nil, err
+			}
+		}
+		buf.Write(C.GoBytes(unsafe.Pointer(nals[i].buf), C.int(bufSize)))
 
 		nalUnits[i] = &NALUnit{
-			bytes:       buffer,
+			buffer:      buf,
 			size:        bufSize,
 			nalUnitType: uint32(nals[i].nal_unit_type),
 			userData:    int64(nals[i].user_data),
+			closed:      int32(0),
+			closeFunc: func() {
+				buf.Reset()
+				e.pool.Put(buf)
+			},
 		}
 	}
-	return nalUnits
+	return nalUnits, nil
 }
 
 func CreateEncoder(funcs ...encoderParameterFunc) (*Encoder, error) {
@@ -233,7 +284,7 @@ func CreateEncoder(funcs ...encoderParameterFunc) (*Encoder, error) {
 		(*C.xvc_encoder_api)(api),
 		(*C.xvc_encoder_parameters)(param),
 	))
-	encoder := &Encoder{api, enc}
+	encoder := &Encoder{api, enc, encParam.bufferPoolFunc()}
 	runtime.SetFinalizer(encoder, finalizeEncoder)
 	return encoder, nil
 }

@@ -7,6 +7,7 @@
 
 typedef struct encode_nal_unit_buf_t {
   unsigned char *buf;
+  char nal_size[4];
   size_t size;
   uint32_t nal_unit_type;
   int64_t user_data;
@@ -55,6 +56,10 @@ encode_result_t* create_encode_result(xvc_enc_nal_unit *nal_units, int num_nal_u
       free_encode_result(result);
       return NULL;
     }
+    result->nals[i].nal_size[0] = (nal_units[i].size) & 0xFF;
+    result->nals[i].nal_size[1] = (nal_units[i].size >> 8) & 0xFF;
+    result->nals[i].nal_size[2] = (nal_units[i].size >> 16) & 0xFF;
+    result->nals[i].nal_size[3] = (nal_units[i].size >> 24) & 0xFF;
     result->nals[i].size = nal_units[i].size;
     result->nals[i].nal_unit_type = nal_units[i].stats.nal_unit_type;
     result->nals[i].user_data = nal_units[i].user_data;
