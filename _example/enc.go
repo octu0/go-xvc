@@ -67,6 +67,8 @@ func main() {
 	}
 
 	for i, nal := range nals {
+		defer nal.Close()
+
 		fmt.Printf("nals[%d] type=%s size=%d\n", i, nal.Type(), len(nal.Bytes()))
 		out, err := ioutil.TempFile("/tmp", fmt.Sprintf("nal_%d_%d_*.xvc", i, nal.Type()))
 		if err != nil {

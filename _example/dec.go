@@ -45,7 +45,9 @@ func main() {
 		panic(err)
 	}
 
-	decoder.Flush()
+	if decoder.Flush() != true {
+		panic("failed to flush")
+	}
 
 	i := 0
 	for {
@@ -53,10 +55,11 @@ func main() {
 		if err != nil {
 			break
 		}
-		nalType, colorMatrix, img := pic.Image()
-		fmt.Printf("nals[%d] type=%s color_matrix=%d img=%T\n", i, nalType, colorMatrix, img)
+		defer pic.Close()
 
-		path, err := saveImage(img)
+		fmt.Printf("nals[%d] type=%s color_matrix=%s img=%T\n", i, pic.Type(), pic.ColorMatrix(), pic.Image())
+
+		path, err := saveImage(pic.Image())
 		if err != nil {
 			panic(err)
 		}

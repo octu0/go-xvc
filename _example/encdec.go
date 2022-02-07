@@ -84,7 +84,7 @@ func main() {
 		}
 
 		for _, nal := range nals {
-			if err := decoder.DecodeNAL(nal); err != nil {
+			if err := decoder.Decode(nal.Bytes()); err != nil {
 				panic(err)
 			}
 		}
@@ -99,12 +99,11 @@ func main() {
 		if err != nil {
 			continue
 		}
-		defer xvc.DestroyDecodedPicture(pic)
+		defer pic.Close()
 
-		nalType, colorMatrix, img := pic.Image()
-		fmt.Printf("frame[%d] type=%s color_matrix=%d img=%T\n", frames, nalType, colorMatrix, img)
+		fmt.Printf("frame[%d] type=%s color_matrix=%d img=%T\n", frames, pic.Type(), pic.ColorMatrix(), pic.Image())
 
-		path, err := saveImage(img)
+		path, err := saveImage(pic.Image())
 		if err != nil {
 			panic(err)
 		}
