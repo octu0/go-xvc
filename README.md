@@ -1,6 +1,12 @@
 # `go-xvc`
 
-[WIP] Go bindings for [divideon/xvc](https://github.com/divideon/xvc)
+[![MIT License](https://img.shields.io/github/license/octu0/go-xvc)](https://github.com/octu0/go-xvc/blob/master/LICENSE)
+[![GoDoc](https://godoc.org/github.com/octu0/go-xvc?status.svg)](https://godoc.org/github.com/octu0/go-xvc)
+[![Go Report Card](https://goreportcard.com/badge/github.com/octu0/go-xvc)](https://goreportcard.com/report/github.com/octu0/go-xvc)
+[![Releases](https://img.shields.io/github/v/release/octu0/go-xvc)](https://github.com/octu0/go-xvc/releases)
+
+Go bindings for [divideon/xvc](https://github.com/divideon/xvc)  
+Available for encode/decode of xvc video codec.
 
 ## Requirements
 
@@ -53,6 +59,8 @@ func encode(out io.Writer) {
 	}
 
 	for _, nal := range nals {
+		defer nal.Close()
+
 		if _, err := out.Write(nal.Bytes()); err != nil {
 			panic(err)
 		}
@@ -82,17 +90,21 @@ func decode(in io.Reader) {
 		panic(err)
 	}
 
-	decoder.Flush()
+	if decoder.Flush(); != true {
+		panic("failed to flush")
+	}
 
 	for {
 		pic, err := decoder.DecodedPicture()
 		if err != nil {
 			break
 		}
-		defer xvc.DestroyDecodedPicture(pic)
+		defer pic.Close()
 
-		nalType, colorMatrix, img := pic.Image()
-		fmt.Printf("type=%s color_matrix=%d img=%T\n", nalType, colorMatrix, img) // type=intra_access_picture color_matrix=3 img=*image.YCbCr
+		fmt.Printf(
+			"type=%s color_matrix=%d img=%T\n", 
+			pic.Type(), pic.ColorMatrix(), pic.Image(),
+		) // => type=intra_access_picture color_matrix=3 img=*image.YCbCr
 	}
 }
 ```
