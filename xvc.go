@@ -111,6 +111,24 @@ const (
 	ChromaFormatUnified                 = 255
 )
 
+func (f ChromaFormat) String() string {
+	switch f {
+	case ChromaFormatMonochrome:
+		return "monochrome"
+	case ChromaFormat420:
+		return "420"
+	case ChromaFormat422:
+		return "422"
+	case ChromaFormat444:
+		return "444"
+	case ChromaFormatARGB:
+		return "argb"
+	case ChromaFormatUnified:
+		return "unified"
+	}
+	return "unknown chroma_format"
+}
+
 type ColorMatrix uint8
 
 const (
@@ -119,6 +137,20 @@ const (
 	ColorMatrix709                 = 2
 	ColorMatrix2020                = 3
 )
+
+func (m ColorMatrix) String() string {
+	switch m {
+	case ColorMatrixUnified:
+		return "unified"
+	case ColorMatrix601:
+		return "601"
+	case ColorMatrix709:
+		return "709"
+	case ColorMatrix2020:
+		return "2020"
+	}
+	return "unknown color_matrix"
+}
 
 type NALUnitType uint8
 
@@ -141,37 +173,37 @@ const (
 )
 
 func (t NALUnitType) String() string {
-  switch t {
-  case IntraPicture:
-    return "intra_picture"
-  case IntraAccessPicture:
-    return "intra_access_picture"
-  case PredictedPicture:
-    return "predicted_picture"
-  case PredictedAccessPicture:
-    return "predicted_access_picture"
-  case BipredictedPicture:
-    return "bipredicted_picture"
-  case BipredictedAccessPicture:
-    return "bipredicted_access_picture"
-  case ReservedPictureType6:
-    return "reserved_picture_type6"
-  case ReservedPictureType7:
-    return "reserved_picture_type7"
-  case ReservedPictureType8:
-    return "reserved_picture_type8"
-  case ReservedPictureType9:
-    return "reserved_picture_type9"
-  case ReservedPictureType10:
-    return "reserved_picture_type10"
-  case SegmentHeader:
-    return "segment_header"
-  case Sei:
-    return "sei"
-  case AccessUnitDelimiter:
-    return "access_unit_delimiter"
-  case EndOfSegment:
-    return "end_of_segment"
-  }
-  return "unknown_nal"
+	switch t {
+	case IntraPicture:
+		return "intra_picture"
+	case IntraAccessPicture:
+		return "intra_access_picture"
+	case PredictedPicture:
+		return "predicted_picture"
+	case PredictedAccessPicture:
+		return "predicted_access_picture"
+	case BipredictedPicture:
+		return "bipredicted_picture"
+	case BipredictedAccessPicture:
+		return "bipredicted_access_picture"
+	case ReservedPictureType6:
+		return "reserved_picture_type6"
+	case ReservedPictureType7:
+		return "reserved_picture_type7"
+	case ReservedPictureType8:
+		return "reserved_picture_type8"
+	case ReservedPictureType9:
+		return "reserved_picture_type9"
+	case ReservedPictureType10:
+		return "reserved_picture_type10"
+	case SegmentHeader:
+		return "segment_header"
+	case Sei:
+		return "sei"
+	case AccessUnitDelimiter:
+		return "access_unit_delimiter"
+	case EndOfSegment:
+		return "end_of_segment"
+	}
+	return "unknown_nal"
 }
